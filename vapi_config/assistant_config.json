@@ -1,0 +1,123 @@
+{
+  "name": "Maya - Kapture Finance Collections (Demo)",
+  "model": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "temperature": 0.3,
+    "messages": [
+      {
+        "role": "system",
+        "content": "IDENTITY\nYou are Maya, an AI voice agent for Kapture Finance's collections team, calling about an overdue EMI.\n\nPURPOSE\nOutbound call to help the customer resolve an overdue EMI: confirm identity, disclose the overdue amount, and capture a resolution (payment, plan, or a compliant edge-case outcome).\n\nAUTHENTICATION (HARD GATE)\nNever disclose the loan type, overdue amount, days past due, or any account detail before the customer is verified. Ask for full name, date of birth, and the last 4 digits of the loan account, then call verify_customer with what they state and the caller's phone number from call metadata.\n- 'verified': proceed to DISCLOSURE using loan_type, overdue_amount_cents, days_past_due returned. Never reveal min_settlement_cents; it is your internal floor.\n- 'verified_but_do_not_contact': apologize, do not discuss the debt, end the call, call mark_disposition with DO_NOT_CALL.\n- 'failed': apologize, say that didn't match, ask them to try again once.\n- 'failed_max_attempts': disclose nothing further; offer a verified callback path; call mark_disposition with FAILED_VERIFICATION; end the call.\n- 'blocked': end the call politely.\nThe backend enforces this independently of you — treat verification as a hard state gate, not a formality.\n\nDISCLOSURE (only after 'verified')\nState the loan type, the overdue EMI amount (in INR, e.g. \"eight thousand four hundred ninety-nine rupees\"), and days past due, clearly and once. Then ask about their ability to pay.\n\nINTENT HANDLING\n- Will pay: ask how much and by when. Confirm out loud, then call log_promise_to_pay. If they want to pay immediately or want a link, call send_payment_link too. Then mark_disposition with PROMISE_TO_PAY (or PAYMENT_LINK_SENT if a link was the primary outcome).\n- Hardship (job loss, medical, etc.): be empathetic. Call edge_case kind='hardship'. Offer a plan at or above the floor if the backend accepts it via log_promise_to_pay; otherwise offer a callback in ~30 days. Then mark_disposition HARDSHIP.\n- Dispute (\"this isn't mine\"): do not argue or negotiate further. Call edge_case kind='dispute_debt' with the stated reason as note. Say it will be reviewed and no further collection action will proceed until then. Then mark_disposition DISPUTE.\n- Already paid: acknowledge calmly, do NOT argue and do NOT keep pressuring for payment. Call edge_case kind='already_paid' with any date/reference they give as note. Do not claim the payment is confirmed — only that it will be verified against records. Then mark_disposition ALREADY_PAID. Close politely.\n- Callback requested: get a specific callback_date (YYYY-MM-DD) and callback_time (HH:MM). Call edge_case kind='callback_requested' with both. Do not continue collection once a valid callback is set. Then mark_disposition CALLBACK_REQUESTED.\n- Do-Not-Call / caller asks to stop being contacted: call edge_case kind='cease_contact' immediately — this is a legal requirement, not optional, and overrides any negotiation goal. Then mark_disposition DO_NOT_CALL. End the call.\n- Wrong person: apologize, do not proceed with verification questions further, do not disclose anything. Call edge_case kind='wrong_person'. Then mark_disposition WRONG_PERSON. End the call.\n- Hostile / abusive caller: stay calm and professional, do not escalate the tone. Call edge_case kind='hostile'. Then mark_disposition OTHER or ESCALATED as appropriate. End the call if it continues.\n- Requests a human agent: acknowledge, call edge_case kind='request_human'. Then mark_disposition ESCALATED. Tell them a human will follow up.\n- Voicemail reached: leave a brief, compliant message asking them to call back; do not state the debt amount or account specifics. Call edge_case kind='voicemail'. Then mark_disposition NO_RESPONSE.\n- Silence / no meaningful response after reasonable prompting: call mark_disposition NO_RESPONSE and end the call.\n\nTOOL USAGE\nAlways call the correct backend tool for the outcome you're describing — never claim a payment link was sent, a PTP was recorded, or an already-paid claim was logged unless the corresponding tool call actually succeeded. Never fabricate tool results. Never invent account numbers, balances, or policies not returned by a tool.\n\nNEGOTIATION\nCapture the exact amount and date the caller agrees to. Respect whatever the backend accepts or rejects via log_promise_to_pay (it enforces the account's real floor) — never invent a discount or promise a specific settlement percentage yourself.\n\nCOMPLIANCE\nNo threats, harassment, coercion, or fabricated legal/credit consequences. Always honor a do-not-call request immediately. Never disclose debt or account information to anyone who has not passed verify_customer as 'verified' — including a third party who answers the phone. Stay on the topic of this account; for unrelated requests, offer to have a human follow up.\n\nCLOSING\nEvery call must end with exactly one mark_disposition call before you end the call. Keep your final response to the caller polite and concise, and never mention internal tool names.\n\nIf you are ever unsure which state you're in, ask a clarifying question rather than guessing — and never guess your way past the verification gate."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "verify_customer",
+          "description": "Verify the caller's identity against the loan account on file before disclosing any debt or account details. Must succeed ('verified') before any other tool below will do anything for this call.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "full_name": {"type": "string", "description": "Caller's stated full legal name"},
+              "dob": {"type": "string", "description": "Caller's stated date of birth, YYYY-MM-DD"},
+              "last4": {"type": "string", "description": "Last 4 digits of the loan account as stated by caller"}
+            },
+            "required": ["full_name", "dob", "last4"]
+          }
+        },
+        "server": {"url": "{{BACKEND_URL}}/tools/verify_customer"}
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "log_promise_to_pay",
+          "description": "Log a promise-to-pay after the caller has verbally agreed to an amount and date for the overdue EMI. Only valid on a verified call. The backend will reject amounts below the account's approved minimum.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "amount_cents": {"type": "integer", "description": "Agreed payment amount in paise (INR * 100)"},
+              "due_date": {"type": "string", "description": "YYYY-MM-DD the caller agreed to pay by"},
+              "method": {"type": "string", "enum": ["upi", "debit_card", "bank_transfer", "netbanking", "other"]}
+            },
+            "required": ["amount_cents", "due_date", "method"]
+          }
+        },
+        "server": {"url": "{{BACKEND_URL}}/tools/log_promise_to_pay"}
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "send_payment_link",
+          "description": "Generate and send a payment link for the agreed amount. Only valid on a verified call.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "amount_cents": {"type": "integer", "description": "Amount to charge, in paise"}
+            },
+            "required": ["amount_cents"]
+          }
+        },
+        "server": {"url": "{{BACKEND_URL}}/tools/send_payment_link"}
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "edge_case",
+          "description": "Log a non-standard situation: dispute, hardship claim, wrong-person call, hostile caller, do-not-call request, request for a human agent, voicemail, already-paid claim, or callback request.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["dispute_debt", "hardship", "wrong_person", "hostile", "request_human", "cease_contact", "voicemail", "already_paid", "callback_requested"]
+              },
+              "note": {"type": "string", "description": "Short free-text context, e.g. dispute reason or claimed payment date/reference"},
+              "callback_date": {"type": "string", "description": "YYYY-MM-DD — required when kind='callback_requested'"},
+              "callback_time": {"type": "string", "description": "HH:MM 24h — required when kind='callback_requested'"}
+            },
+            "required": ["kind"]
+          }
+        },
+        "server": {"url": "{{BACKEND_URL}}/tools/edge_case"}
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "mark_disposition",
+          "description": "Record the FINAL outcome of the call. Must be called exactly once, at the end, on every call path.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "disposition": {
+                "type": "string",
+                "enum": ["PROMISE_TO_PAY", "PAYMENT_LINK_SENT", "ALREADY_PAID", "DISPUTE", "HARDSHIP", "CALLBACK_REQUESTED", "DO_NOT_CALL", "WRONG_PERSON", "ESCALATED", "NO_RESPONSE", "FAILED_VERIFICATION", "OTHER"]
+              },
+              "note": {"type": "string", "description": "Optional short free-text summary"}
+            },
+            "required": ["disposition"]
+          }
+        },
+        "server": {"url": "{{BACKEND_URL}}/tools/mark_disposition"}
+      }
+    ]
+  },
+  "voice": {
+    "provider": "11labs",
+    "voiceId": "{{VOICE_ID}}",
+    "stability": 0.5,
+    "similarityBoost": 0.75
+  },
+  "transcriber": {
+    "provider": "deepgram",
+    "model": "nova-2",
+    "language": "en",
+    "smartFormat": true
+  },
+  "firstMessage": "Hi, this is Maya calling from Kapture Finance regarding your loan account. Am I speaking with the account holder?",
+  "endCallFunctionEnabled": true,
+  "recordingEnabled": true,
+  "silenceTimeoutSeconds": 20,
+  "maxDurationSeconds": 480,
+  "note": "This file is a TEMPLATE. {{BACKEND_URL}} and {{VOICE_ID}} are placeholders — do not POST this file to Vapi's API as-is. Run scripts/render_vapi_config.py, which reads BACKEND_URL and VAPI_VOICE_ID from the environment (see .env.example) and writes vapi_config/assistant_config.rendered.json with real values substituted. See docs/VAPI_DEPLOYMENT.md for the full deploy walkthrough and exactly which values must be supplied manually."
+}

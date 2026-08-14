@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+backend/collections.db
+vapi_config/assistant_config.rendered.json
+.DS_Store

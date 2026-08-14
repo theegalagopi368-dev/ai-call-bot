@@ -1,0 +1,49 @@
+digraph Architecture {
+  rankdir=TB;
+  fontname="Helvetica";
+  bgcolor="white";
+  splines=ortho;
+  nodesep=0.35;
+  ranksep=0.55;
+  node [fontname="Helvetica", fontsize=12, shape=box, style="rounded,filled", color="#333333", fillcolor="#F5F7FA", margin=0.18];
+  edge [fontname="Helvetica", fontsize=10, color="#555555"];
+
+  Customer [label="Customer\n(phone line)", shape=oval, fillcolor="#FFF3D6"];
+  Telephony [label="Phone / Telephony Network"];
+
+  subgraph cluster_vapi {
+    label="Vapi (voice orchestration platform)";
+    fontsize=12; style="rounded"; color="#8899AA"; bgcolor="#EEF3FA";
+    STT [label="STT\n(Deepgram nova-2)"];
+    LLM [label="LLM\n(Claude, tool-calling)"];
+    TTS [label="TTS\n(ElevenLabs)"];
+  }
+
+  Maya [label="Maya Voice Agent\n(system prompt + tool schemas\nin vapi_config/assistant_config.json)", fillcolor="#E4EFE0"];
+
+  subgraph cluster_backend {
+    label="FastAPI Backend  (backend/main.py) — SOURCE OF TRUTH / STATE CONTROL";
+    fontsize=12; style="rounded"; color="#8899AA"; bgcolor="#FBEFF2";
+    { rank=same;
+      verify [label="verify_customer\n(hard verification gate)"];
+      logptp [label="log_promise_to_pay\n(alias: log_ptp)"];
+      sendlink [label="send_payment_link"];
+      edgecase [label="edge_case\ndispute · hardship · wrong_person\nhostile · request_human · cease_contact\nvoicemail · already_paid · callback_requested"];
+      markdisp [label="mark_disposition\n(final outcome — every call)"];
+    }
+    getacct [label="no separate get_account_details tool — account fields\n(loan_type, overdue_amount, days_past_due) are returned\ninline by verify_customer on a successful match", shape=note, fillcolor="#FFFFFF", fontsize=10, style="filled"];
+  }
+
+  DB [label="SQLite (collections.db)\ncustomers · calls · ptps · payment_links · events", shape=cylinder, fillcolor="#E8E4F5"];
+  Dashboard [label="Observability / Dashboard\n(Streamlit — dashboard/app.py)\nLive Monitor + Call Simulator", fillcolor="#FDEBD3"];
+
+  Customer -> Telephony -> STT -> LLM -> TTS;
+  TTS -> Customer [constraint=false, label="synthesized speech -> caller"];
+  LLM -> Maya [label="tool-calling loop"];
+  Maya -> verify; Maya -> logptp; Maya -> sendlink; Maya -> edgecase; Maya -> markdisp;
+  verify -> DB; logptp -> DB; sendlink -> DB; edgecase -> DB; markdisp -> DB;
+  verify -> LLM [constraint=false, style=dashed, color="#999999",
+                 label="tool result — debt fields only included if result='verified'"];
+  DB -> Dashboard [label="GET /api/*"];
+  edgecase -> getacct [style=invis];
+}
